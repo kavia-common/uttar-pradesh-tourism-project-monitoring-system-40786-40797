@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.core.config import get_settings
 from src.db.mongo import register_mongo_events, check_db_ready
+from src.api.projects import router as projects_router
 
 settings = get_settings()
 
@@ -34,22 +35,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# PUBLIC_INTERFACE
-def require_db_available():
-    """Dependency that ensures the database is configured and available.
-
-    Raises:
-        HTTPException 503 if DB is not configured or not reachable.
-    """
-    from src.db.mongo import get_database  # local import to avoid cyc deps
-    db = get_database()
-    if db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database not available",
-        )
-    return db
+# Register routers that may require DB; they will be gated via dependency
+app.include_router(projects_router)
 
 
 # PUBLIC_INTERFACE
