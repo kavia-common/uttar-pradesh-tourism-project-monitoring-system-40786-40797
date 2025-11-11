@@ -1,66 +1,78 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+import logging
+from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from fastapi import FastAPI
 
 from src.core.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 _client: Optional[AsyncIOMotorClient] = None
 
 
-def get_client() -> AsyncIOMotorClient:
-    """
-    Internal accessor for the singleton AsyncIOMotorClient.
-    This should be initialized via register_mongo_events during app startup.
-    """
+def _can_use_db() -> bool:
+    settings = get_settings()
+    return settings.db_enabled
+
+
+def _ensure_client() -> Optional[AsyncIOMotorClient]:
+    """Create the Mongo client lazily only if DB is enabled."""
     global _client
+    if not _can_use_db():
+        return None
     if _client is None:
-        # Lazy initialization as fallback (still recommended to use startup hook)
         settings = get_settings()
-        _client = AsyncIOMotorClient(settings.MONGO_URI)
+        # Do not log URI or any secrets
+        _client = AsyncIOMotorClient(settings.MONGO_URI)  # type: ignore[arg-type]
     return _client
 
 
 # PUBLIC_INTERFACE
-def get_database() -> AsyncIOMotorDatabase:
-    """Return a handle to the configured MongoDB database."""
+def get_database() -> Optional[AsyncIOMotorDatabase]:
+    """Return a handle to the configured MongoDB database, or None if DB is disabled."""
     settings = get_settings()
-    client = get_client()
-    return client[settings.MONGO_DB]
-
-
-@asynccontextmanager
-async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """
-    Lifespan context manager to initialize and cleanup MongoDB client.
-    """
-    global _client
-    settings = get_settings()
-    _client = AsyncIOMotorClient(settings.MONGO_URI)
-
-    try:
-        # optional: ping to verify connectivity (non-fatal if it fails later)
-        await _client.admin.command("ping")
-    except Exception:
-        # We deliberately avoid raising here to allow app to start,
-        # but the first DB usage will surface the error.
-        pass
-
-    try:
-        yield
-    finally:
-        if _client is not None:
-            _client.close()
-            _client = None
+    client = _ensure_client()
+    if client is None or not settings.db_enabled:
+        return None
+    return client[settings.MONGO_DB]  # type: ignore[index]
 
 
 # PUBLIC_INTERFACE
-def register_mongo_events(app: FastAPI) -> None:
-    """Register startup/shutdown handlers for MongoDB Motor client on the FastAPI app.
+async def check_db_ready() -> tuple[bool, Optional[str]]:
+    """Ping MongoDB to verify readiness when enabled.
 
-    This sets app.router.lifespan_context to ensure client is managed automatically.
+    Returns:
+        (True, None) if DB is configured and reachable.
+        (False, reason) if DB is configured but not reachable; or disabled.
     """
-    app.router.lifespan_context = _lifespan  # type: ignore[assignment]
+    if not _can_use_db():
+        return False, "Database configuration not provided"
+    client = _ensure_client()
+    if client is None:
+        return False, "Database client not initialized"
+    try:
+        await client.admin.command("ping")
+        return True, None
+    except Exception as exc:
+        # Do not include sensitive details; keep concise
+        logger.warning("Database ping failed; service will report not ready.")
+        return False, f"Database not reachable: {exc.__class__.__name__}"
+
+
+def register_mongo_events(app: FastAPI) -> None:
+    """No-op registration retained for compatibility.
+
+    We avoid forcing DB connection at startup; cleanup on shutdown if created.
+    """
+
+    @app.on_event("shutdown")
+    async def _close_client() -> None:
+        global _client
+        try:
+            if _client is not None:
+                _client.close()
+        finally:
+            _client = None
