@@ -18,14 +18,17 @@ class Settings(BaseModel):
     """
     Application settings loaded from environment variables.
 
-    Security: Never log secret values. This model centralizes configuration access.
+    Security:
+    - Never log secret values or connection URIs.
+    - This model centralizes configuration access and keeps DB/JWT optional at startup
+      so the application can boot and expose /health even when env vars are missing.
     """
 
-    # Database (optional at startup)
+    # Database (optional at startup; warn-only if missing)
     MONGO_URI: Optional[str] = Field(default=None, description="MongoDB connection URI (mongodb or mongodb+srv)")
     MONGO_DB: Optional[str] = Field(default=None, description="MongoDB database name")
 
-    # Auth (JWT secret is required for protected routes, but app may start without it)
+    # Auth (JWT secret is required only when using protected routes; app may start without it)
     JWT_SECRET: Optional[str] = Field(default=None, description="Secret key for signing JWT tokens")
     JWT_ALGORITHM: str = Field(default="HS256", description="JWT signing algorithm")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60, description="Access token expiry in minutes")
